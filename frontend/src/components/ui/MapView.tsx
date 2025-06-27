@@ -3,16 +3,40 @@ import mapboxgl, { Map } from 'mapbox-gl'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import '../../styles/MapView.css'
 
-import damsDataRaw from '../../data/dams.json'
+import sensorsDataRaw from '../../data/sensorData.json'
 import Legend from '../layout/Legend.tsx'
 import Sidebar from '../layout/Sidebar.tsx'
 
 import { createDamVicinityGrid } from '../../utils/grid.ts'
-import type { DamFeatureCollection } from '../../types/dam.ts'
 
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_ACCESS_TOKEN || import.meta.env.VITE_MAPBOX_API
 
-const damsData = damsDataRaw as DamFeatureCollection
+// Define proper types to match expected interface
+type SensorStatus = "alert" | "alarm" | "critical";
+
+interface SensorTile {
+    centroid: [number, number];
+    status: SensorStatus;
+}
+
+interface Sensor {
+    sensor: string;
+    status: SensorStatus;
+    centroid: [number, number];
+    tiles: SensorTile[];
+}
+
+// Type assertion to ensure the data matches our expected structure
+const sensorsData: Sensor[] = sensorsDataRaw.map(sensor => ({
+    ...sensor,
+    centroid: sensor.centroid as [number, number],
+    status: sensor.status as SensorStatus,
+    tiles: sensor.tiles.map(tile => ({
+        ...tile,
+        centroid: tile.centroid as [number, number],
+        status: tile.status as SensorStatus
+    }))
+}))
 
 function MapView() {
     const mapRef = useRef<Map | null>(null)
@@ -69,55 +93,64 @@ function MapView() {
                 }
             })
 
-            damsData.features.forEach((feature) => {
-                // Type guard to ensure we're working with Point geometry
-                if (feature.geometry.type !== 'Point') {
-                    console.warn('Skipping non-Point geometry:', feature.geometry.type)
-                    return
+            // Add sensor markers
+            sensorsData.forEach((sensor) => {
+                const [lat, lng] = sensor.centroid
+                const { sensor: sensorName, status } = sensor
+
+                // Determine marker color based on status
+                const statusColors = {
+                    'alert': '#ffff00',    // Yellow
+                    'alarm': '#ff8800',    // Orange
+                    'critical': '#ff0000'  // Red
                 }
-
-                const coordinates = feature.geometry.coordinates as [number, number]
-                const { sensor_id, location, alert_level, alarm_level, critical_level } = feature.properties
-
-                const alertLevelColor = alert_level >= 3 ? '#ff3300' : alert_level >= 2 ? '#ffcc00' : '#00ff00'
+                const markerColor = statusColors[status as keyof typeof statusColors] || '#00ff00'
 
                 const popupContent = `
           <div class="popup-content">
-            <h3 class="popup-title">${sensor_id}</h3>
-            <p><strong>Location:</strong> ${location}</p>
-            <p><strong>Alert Level:</strong> <span class="alert-level-text" style="color: ${alertLevelColor};">${alert_level}</span></p>
-            <p><strong>Alarm Level:</strong> ${alarm_level}</p>
-            <p><strong>Critical Level:</strong> ${critical_level}</p>
-            <p><strong>Risk Assessment Area:</strong> ~3km radius</p>
+            <h3 class="popup-title">${sensorName}</h3>
+            <p><strong>Status:</strong> <span style="color: ${markerColor}; font-weight: bold;">${status.toUpperCase()}</span></p>
+            <p><strong>Coordinates:</strong> ${lat.toFixed(6)}, ${lng.toFixed(6)}</p>
+            <p><strong>Adjacent Tiles:</strong> ${sensor.tiles.length}</p>
+            <div style="margin-top: 10px;">
+              <p><strong>Tile Statuses:</strong></p>
+              ${sensor.tiles.map((tile, index) =>
+                    `<p style="margin: 2px 0; font-size: 12px;">
+                  Tile ${index + 1}: <span style="color: ${statusColors[tile.status as keyof typeof statusColors]}; font-weight: bold;">${tile.status}</span>
+                </p>`
+                ).join('')}
+            </div>
             <p><strong>Grid Resolution:</strong> 30m per cell</p>
           </div>
         `
 
                 // Create custom marker element
                 const markerElement = document.createElement('div')
-                markerElement.className = 'dam-marker'
-                markerElement.style.backgroundColor = alertLevelColor
+                markerElement.className = 'sensor-marker'
+                markerElement.style.cssText = `
+          width: 12px;
+          height: 12px;
+          background-color: ${markerColor};
+          border: 2px solid white;
+          border-radius: 50%;
+          cursor: pointer;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        `
 
                 new mapboxgl.Marker({ element: markerElement })
-                    .setLngLat(coordinates)
+                    .setLngLat([lng, lat])
                     .setPopup(new mapboxgl.Popup().setHTML(popupContent))
                     .addTo(map)
             })
 
-            // Pixelated overlay
-            const pixelatedData = createDamVicinityGrid(damsData)
-
-            // Ensure the data has the correct type property
-            const geoJsonData = {
-                ...pixelatedData,
-                type: 'FeatureCollection' as const
-            }
-
+            // Create and add pixelated grid overlay using sensor data
+            const pixelatedData = createDamVicinityGrid(sensorsData)
             map.addSource('pixelated-grid', {
                 type: 'geojson',
-                data: geoJsonData
+                data: pixelatedData
             })
 
+            // Add pixelated overlay layers - positioned above water but below buildings
             map.addLayer({
                 id: 'pixelated-overlay',
                 type: 'fill',
@@ -126,38 +159,21 @@ function MapView() {
                 paint: {
                     'fill-color': [
                         'case',
-                        ['==', ['get', 'riskLevel'], 3], '#ff0000',
-                        ['==', ['get', 'riskLevel'], 2], '#ff8800',
-                        ['==', ['get', 'riskLevel'], 1], '#ffff00',
+                        ['==', ['get', 'tileStatus'], 'critical'], '#ff0000',
+                        ['==', ['get', 'tileStatus'], 'alarm'], '#ff8800',
+                        ['==', ['get', 'tileStatus'], 'alert'], '#ffff00',
                         '#00ff00'
                     ],
                     'fill-opacity': [
                         'interpolate', ['linear'], ['zoom'],
-                        9, 0.6,
-                        12, 0.5,
-                        15, 0.3
+                        9, 0.7,
+                        12, 0.6,
+                        15, 0.4
                     ]
                 }
-            }, 'water-areas')
+            })
 
-            map.addLayer({
-                id: 'pixelated-outline',
-                type: 'line',
-                source: 'pixelated-grid',
-                layout: { visibility: 'none' },
-                paint: {
-                    'line-color': '#333333',
-                    'line-width': [
-                        'interpolate', ['linear'], ['zoom'],
-                        9, 0.1,
-                        12, 0.2,
-                        15, 0.5
-                    ],
-                    'line-opacity': 0.2
-                }
-            }, 'water-areas')
-
-            // 3D buildings
+            // 3D buildings - added after pixelated layers so they appear on top
             map.addLayer({
                 id: '3d-buildings',
                 source: 'composite',
@@ -203,43 +219,46 @@ function MapView() {
                 if (!e.features || !e.features[0]) return
 
                 const feature = e.features[0]
+                const props = feature.properties
 
-                // Type guard and safe coordinate access
-                if (feature.geometry.type !== 'Polygon') {
-                    console.warn('Expected Polygon geometry for grid cell')
-                    return
+                // Type guard to check if geometry has coordinates
+                if (feature.geometry.type === 'Polygon') {
+                    const coordinates = feature.geometry.coordinates[0]
+                    let lngSum = 0
+                    let latSum = 0
+                    const pointCount = coordinates.length - 1 // Exclude duplicate closing point
+
+                    for (let i = 0; i < pointCount; i++) {
+                        lngSum += coordinates[i][0]
+                        latSum += coordinates[i][1]
+                    }
+
+                    const centroidLng = lngSum / pointCount
+                    const centroidLat = latSum / pointCount
+
+                    // Fixed template literal syntax
+                    const tileCentroidText = props?.tileCentroid
+                        ? `${props.tileCentroid[0].toFixed(6)}, ${props.tileCentroid[1].toFixed(6)}`
+                        : 'N/A'
+
+                    new mapboxgl.Popup()
+                        .setLngLat(e.lngLat)
+                        .setHTML(`
+                <div class="popup-content">
+                  <h3 class="popup-title">Sensor Tile Assessment</h3>
+                  <p><strong>Sensor:</strong> ${props?.sensorId || 'Unknown'}</p>
+                  <p><strong>Sensor Status:</strong> <span style="color: ${props?.statusColor}; font-weight: bold;">${props?.sensorStatus?.toUpperCase() || 'Unknown'}</span></p>
+                  <p><strong>Tile Status:</strong> <span style="color: ${props?.statusColor}; font-weight: bold;">${props?.tileStatus?.toUpperCase() || 'Unknown'}</span></p>
+                  <p><strong>Tile Index:</strong> ${props?.tileIndex + 1 || 'N/A'}</p>
+                  <p><strong>Risk Level:</strong> ${props?.riskLevel || 0}</p>
+                  <p><strong>Distance to Sensor:</strong> ${props?.distanceToSensor || 0}m</p>
+                  <p><strong>Grid Cell Size:</strong> ${props?.boxSizeMeters || 30}m × ${props?.boxSizeMeters || 30}m</p>
+                  <p><strong>Tile Centroid:</strong> ${tileCentroidText}</p>
+                  <p><strong>Cell Centroid:</strong> ${centroidLat.toFixed(6)}, ${centroidLng.toFixed(6)}</p>
+                </div>
+              `)
+                        .addTo(map)
                 }
-
-                // Calculate centroid of the polygon
-                const coordinates = feature.geometry.coordinates[0] as [number, number][]
-                let lngSum = 0
-                let latSum = 0
-                const pointCount = coordinates.length - 1 // Exclude duplicate closing point
-
-                for (let i = 0; i < pointCount; i++) {
-                    lngSum += coordinates[i][0]
-                    latSum += coordinates[i][1]
-                }
-
-                const centroidLng = lngSum / pointCount
-                const centroidLat = latSum / pointCount
-
-                new mapboxgl.Popup()
-                    .setLngLat(e.lngLat)
-                    .setHTML(`
-            <div class="popup-content">
-              <h3 class="popup-title ">Dam Risk Assessment</h3>
-              <p><strong>Risk Level:</strong> ${feature.properties?.riskLevel || 0}</p>
-              <p><strong>Dam ID:</strong> ${feature.properties?.damId || 'Unknown'}</p>
-              <p><strong>Dam Alert Level:</strong> ${feature.properties?.damAlertLevel || 0}</p>
-              <p><strong>Distance to Dam:</strong> ${feature.properties?.distanceToDam || 0}m</p>
-              <p><strong>Elevation:</strong> ${Math.round(feature.properties?.elevation || 0)}m</p>
-              <p><strong>Population Density:</strong> ${Math.round(feature.properties?.population || 0)}</p>
-              <p><strong>Grid Cell Size:</strong> ${feature.properties?.boxSizeMeters || 30}m × ${feature.properties?.boxSizeMeters || 30}m</p>
-              <p><strong>Mean Coordinate:</strong> ${centroidLat.toFixed(6)}, ${centroidLng.toFixed(6)}</p>
-            </div>
-          `)
-                    .addTo(map)
             })
 
             // Roads overlay
@@ -268,7 +287,8 @@ function MapView() {
 
     const toggleLayer = (id: string, visible: boolean) => {
         if (mapRef.current) {
-            const visibility = visible ? 'none' : 'visible'
+            // Fixed visibility logic
+            const visibility = visible ? 'visible' : 'none'
             mapRef.current.setLayoutProperty(id, 'visibility', visibility)
         }
     }
@@ -296,17 +316,23 @@ function MapView() {
                     }
                 }}
                 toggleWaterAreas={() => {
-                    toggleLayer('water-areas', showWaterAreas)
-                    setShowWaterAreas(!showWaterAreas)
+                    const newShowWaterAreas = !showWaterAreas
+                    toggleLayer('water-areas', newShowWaterAreas)
+                    setShowWaterAreas(newShowWaterAreas)
                 }}
                 toggle3DBuildings={() => {
-                    toggleLayer('3d-buildings', show3DBuildings)
-                    setShow3DBuildings(!show3DBuildings)
+                    const newShow3DBuildings = !show3DBuildings
+                    toggleLayer('3d-buildings', newShow3DBuildings)
+                    setShow3DBuildings(newShow3DBuildings)
                 }}
                 togglePixelatedOverlay={() => {
-                    toggleLayer('pixelated-overlay', showPixelatedOverlay)
-                    toggleLayer('pixelated-outline', showPixelatedOverlay)
-                    setShowPixelatedOverlay(!showPixelatedOverlay)
+                    const newShowPixelatedOverlay = !showPixelatedOverlay
+                    toggleLayer('pixelated-overlay', newShowPixelatedOverlay)
+                    // Only toggle pixelated-outline if it exists
+                    if (mapRef.current && mapRef.current.getLayer('pixelated-outline')) {
+                        toggleLayer('pixelated-outline', newShowPixelatedOverlay)
+                    }
+                    setShowPixelatedOverlay(newShowPixelatedOverlay)
                 }}
                 showWaterAreas={showWaterAreas}
                 show3DBuildings={show3DBuildings}
