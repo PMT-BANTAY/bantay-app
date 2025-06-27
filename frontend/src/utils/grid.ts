@@ -73,7 +73,8 @@ const statusToColor: Record<string, string> = {
 
 export const createSensorVicinityGrid = (sensorsData: Sensor[]): GeoJSON.FeatureCollection => {
     const features: GridFeature[] = []
-    const boxSizeMeters = 30 // Changed back to 30m as mentioned in your original comment
+    const boxSizeMeters = 30 // 30m grid cells
+    let totalTilesProcessed = 0
 
     // Validate input data
     if (!Array.isArray(sensorsData) || sensorsData.length === 0) {
@@ -99,8 +100,11 @@ export const createSensorVicinityGrid = (sensorsData: Sensor[]): GeoJSON.Feature
         const sensorCentroid = sensor.centroid
         const sensorStatus = sensor.status || 'alert'
         const sensorName = sensor.sensor || 'Unknown Sensor'
+        const sensorTileCount = sensor.tiles.length
 
-        // Create grid cells for each tile in the sensor
+        console.log(`Processing sensor "${sensorName}" with ${sensorTileCount} tiles - NO LIMIT APPLIED`)
+
+        // Process ALL tiles in the sensor - no limit
         sensor.tiles.forEach((tile: Tile, index: number) => {
             // Validate tile data
             if (!tile || !tile.centroid || !Array.isArray(tile.centroid) || tile.centroid.length !== 2) {
@@ -162,8 +166,15 @@ export const createSensorVicinityGrid = (sensorsData: Sensor[]): GeoJSON.Feature
                     statusColor: statusToColor[tileStatus] || '#00ff00'
                 }
             })
+
+            totalTilesProcessed++
         })
+
+        console.log(`Completed processing sensor "${sensorName}" - processed ${sensorTileCount} tiles`)
     })
+
+    console.log(`Total tiles processed across all sensors: ${totalTilesProcessed}`)
+    console.log(`Total grid features created: ${features.length}`)
 
     return {
         type: 'FeatureCollection',
