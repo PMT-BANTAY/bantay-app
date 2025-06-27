@@ -91,7 +91,7 @@ export const SidebarContent: React.FC<SidebarContentProps> = ({
         <div className="p-6 pb-5">
             {/* Status Section */}
             <div className="mb-8">
-                <h2 className="text-lg font-semibold text-slate-800 text-center mb-5">
+                <h2 className="text-xl font-bold text-[#066AAA] text-center mb-5">
                     Your Area's Status
                 </h2>
                 <div className="grid grid-cols-2 gap-4 mb-8">
